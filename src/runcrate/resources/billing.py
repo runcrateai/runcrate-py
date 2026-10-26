@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from runcrate._exceptions import RuncrateError
 from runcrate._pagination import PaginatedResponse
 from runcrate._transport import new_idempotency_key
 from runcrate.models.billing import (
@@ -83,19 +84,28 @@ class Billing:
         the same key never charges twice: it answers that top-up's current status, which is how
         a ``processing`` or ``requires_action`` top-up is polled. Needs the billing permission on
         the API key (``PermissionDeniedError``); a reached cap, no card or a payment hold raise
-        ``InsufficientCreditsError`` with ``code`` saying which.
+        ``InsufficientCreditsError`` with ``code`` saying which. While the first request with the
+        key is still being charged, the SDK waits and asks again for its result.
+
+        Any error raised carries the key as ``idempotency_key``, so the same top-up can be sent
+        again after a timeout or a lost connection without charging twice.
         """
         body = _top_up_body(amount_usd, idempotency_key)
-        data, _ = self._transport.request(
-            "POST",
-            _TOPUPS,
-            json=body,
-            cast_to=TopUp,
-            # The route answers the same top-up for the same key, so a retry (same body, same
-            # key) never charges twice.
-            idempotency_key=body["idempotency_key"],
-            idempotent=True,
-        )
+        key = body["idempotency_key"]
+        try:
+            data, _ = self._transport.request(
+                "POST",
+                _TOPUPS,
+                json=body,
+                cast_to=TopUp,
+                # The route answers the same top-up for the same key, so a retry (same body,
+                # same key) never charges twice.
+                idempotency_key=key,
+                idempotent=True,
+            )
+        except RuncrateError as exc:
+            exc.idempotency_key = key  # type: ignore[attr-defined]
+            raise
         return data
 
     def get_auto_recharge(self) -> AutoRecharge:
@@ -170,14 +180,19 @@ class AsyncBilling:
     async def top_up(self, *, amount_usd: float, idempotency_key: Optional[str] = None) -> TopUp:
         """See ``Billing.top_up``."""
         body = _top_up_body(amount_usd, idempotency_key)
-        data, _ = await self._transport.request(
-            "POST",
-            _TOPUPS,
-            json=body,
-            cast_to=TopUp,
-            idempotency_key=body["idempotency_key"],
-            idempotent=True,
-        )
+        key = body["idempotency_key"]
+        try:
+            data, _ = await self._transport.request(
+                "POST",
+                _TOPUPS,
+                json=body,
+                cast_to=TopUp,
+                idempotency_key=key,
+                idempotent=True,
+            )
+        except RuncrateError as exc:
+            exc.idempotency_key = key  # type: ignore[attr-defined]
+            raise
         return data
 
     async def get_auto_recharge(self) -> AutoRecharge:

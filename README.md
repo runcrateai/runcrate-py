@@ -377,6 +377,17 @@ topup = client.billing.top_up(amount_usd=50, idempotency_key=topup.idempotency_k
 
 Without `idempotency_key` the SDK makes one (a UUID) and returns it on the result. A reached cap, no saved card or a payment hold raise `InsufficientCreditsError` (`code` is `TOPUP_CAP_REACHED`, `NO_PAYMENT_METHOD` or `PAYMENT_HOLD`); a key without the billing permission raises `PermissionDeniedError`.
 
+While the first request with a key is still being charged, the SDK waits and asks again for its result. Every error `top_up` raises carries the key it sent as `idempotency_key`, so after a timeout or a lost connection the same top-up can be sent again without charging twice:
+
+```python
+from runcrate import ConnectionError, TimeoutError
+
+try:
+    topup = client.billing.top_up(amount_usd=50)
+except (TimeoutError, ConnectionError) as e:
+    topup = client.billing.top_up(amount_usd=50, idempotency_key=e.idempotency_key)
+```
+
 ```python
 # Auto-recharge: when the balance falls below threshold_usd, top it up to target_usd.
 client.billing.get_auto_recharge()

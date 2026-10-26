@@ -10,7 +10,22 @@ import httpx
 import pytest
 import respx
 
-from runcrate import AsyncRuncrate, ConflictError, PaginatedResponse, Runcrate
+from runcrate import (
+    AsyncRuncrate,
+    ConflictError,
+    InsufficientCreditsError,
+    PaginatedResponse,
+    Runcrate,
+    TimeoutError,
+)
+
+_IN_PROGRESS = {
+    "error": {
+        "code": "conflict",
+        "message": "Being charged right now.",
+        "details": {"reason": "idempotency_in_progress"},
+    }
+}
 
 
 def _topup(key: str, **overrides: Any) -> dict[str, Any]:
@@ -196,17 +211,65 @@ class TestTopUp:
         assert topup.confirm_url is not None
         assert topup.expires_at is not None
 
-    def test_in_progress_conflict_raises(self, client: Runcrate, mock_api: respx.MockRouter):
+    def test_waits_and_asks_again_while_in_progress(
+        self, api_key: str, base_url: str, mock_api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+    ):
+        slept: list[float] = []
+        monkeypatch.setattr("runcrate._transport.time.sleep", slept.append)
+        route = mock_api.post("/api/v1/billing/topups").mock(
+            side_effect=[httpx.Response(409, headers={"Retry-After": "5"}, json=_IN_PROGRESS), _echo_topup]
+        )
+        with Runcrate(api_key=api_key, base_url=base_url, max_retries=2) as client:
+            topup = client.billing.top_up(amount_usd=50, idempotency_key="k")
+
+        assert route.call_count == 2
+        assert [c.request.headers["Idempotency-Key"] for c in route.calls] == ["k", "k"]
+        assert slept == [5.0]
+        assert topup.status == "succeeded"
+
+    def test_error_carries_the_given_key(self, client: Runcrate, mock_api: respx.MockRouter):
         mock_api.post("/api/v1/billing/topups").mock(
-            return_value=httpx.Response(
-                409,
-                headers={"Retry-After": "5"},
-                json={"error": {"code": "conflict", "message": "Being charged right now."}},
-            )
+            return_value=httpx.Response(409, headers={"Retry-After": "5"}, json=_IN_PROGRESS)
         )
 
-        with pytest.raises(ConflictError):
+        with pytest.raises(ConflictError) as exc:
             client.billing.top_up(amount_usd=50, idempotency_key="k")
+        assert exc.value.idempotency_key == "k"  # type: ignore[attr-defined]
+
+    def test_timeout_carries_the_generated_key(
+        self, client: Runcrate, mock_api: respx.MockRouter
+    ):
+        route = mock_api.post("/api/v1/billing/topups").mock(side_effect=httpx.ReadTimeout("slow"))
+
+        with pytest.raises(TimeoutError) as exc:
+            client.billing.top_up(amount_usd=50)
+        sent = json.loads(route.calls[0].request.content)["idempotency_key"]
+        assert exc.value.idempotency_key == sent  # type: ignore[attr-defined]
+
+    async def test_async_waits_while_in_progress_and_error_carries_key(
+        self, api_key: str, base_url: str, mock_api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def no_sleep(_: float) -> None:
+            return None
+
+        monkeypatch.setattr("runcrate._transport.asyncio.sleep", no_sleep)
+        route = mock_api.post("/api/v1/billing/topups").mock(
+            side_effect=[
+                httpx.Response(409, json=_IN_PROGRESS),
+                _echo_topup,
+                httpx.Response(402, json={"error": {"code": "NO_PAYMENT_METHOD", "message": "No card."}}),
+            ]
+        )
+        async with AsyncRuncrate(api_key=api_key, base_url=base_url, max_retries=2) as client:
+            topup = await client.billing.top_up(amount_usd=50, idempotency_key="k")
+            with pytest.raises(InsufficientCreditsError) as exc:
+                await client.billing.top_up(amount_usd=20)
+
+        assert route.call_count == 3
+        assert topup.idempotency_key == "k"
+        sent = json.loads(route.calls[2].request.content)["idempotency_key"]
+        assert exc.value.code == "NO_PAYMENT_METHOD"
+        assert exc.value.idempotency_key == sent  # type: ignore[attr-defined]
 
     async def test_async_top_up(self, api_key: str, base_url: str, mock_api: respx.MockRouter):
         route = mock_api.post("/api/v1/billing/topups").mock(side_effect=_echo_topup)
