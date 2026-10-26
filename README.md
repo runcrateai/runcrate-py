@@ -352,9 +352,39 @@ client.storage.get("volume-id")
 ### Billing
 
 ```python
-client.billing.get_balance()
+balance = client.billing.get_balance()
+print(balance.credits_balance, balance.burn_usd_per_hour, balance.runway_hours)
 client.billing.list_transactions(limit=10, offset=0)
 client.billing.usage(from_date="2025-01-01", to_date="2025-01-31")
+```
+
+An agent or program can top up the balance from the workspace's saved card. The API key needs the billing permission, which a workspace owner or manager turns on (with daily and monthly caps) on the dashboard API keys page. Cards are only added on the dashboard.
+
+```python
+topup = client.billing.top_up(amount_usd=50)  # 20 to 10000
+if topup.status == "succeeded":
+    print(f"New balance: ${topup.balance_usd}")
+elif topup.status == "requires_action":
+    # Nothing is charged until a workspace owner or manager confirms it here.
+    print(f"Confirm at {topup.confirm_url} before {topup.expires_at}")
+elif topup.status == "declined":
+    print(topup.reason, topup.message)
+
+# Calling again with the same key never charges twice: it answers the top-up's current
+# status, which is how a "processing" or "requires_action" top-up is polled.
+topup = client.billing.top_up(amount_usd=50, idempotency_key=topup.idempotency_key)
+```
+
+Without `idempotency_key` the SDK makes one (a UUID) and returns it on the result. A reached cap, no saved card or a payment hold raise `InsufficientCreditsError` (`code` is `TOPUP_CAP_REACHED`, `NO_PAYMENT_METHOD` or `PAYMENT_HOLD`); a key without the billing permission raises `PermissionDeniedError`.
+
+```python
+# Auto-recharge: when the balance falls below threshold_usd, top it up to target_usd.
+client.billing.get_auto_recharge()
+client.billing.set_auto_recharge(enabled=True, threshold_usd=20, target_usd=100)
+client.billing.set_auto_recharge(enabled=False, threshold_usd=20, target_usd=100)  # off
+
+for card in client.billing.list_payment_methods():
+    print(card.brand, card.last4, card.exp_month, card.exp_year, card.default)
 ```
 
 ### Templates

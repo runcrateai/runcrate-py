@@ -1,6 +1,14 @@
 """Pydantic models for the Runcrate API."""
 
-from runcrate.models.billing import Balance, Transaction, UsageSummary
+from runcrate.models.billing import (
+    AutoRecharge,
+    Balance,
+    PaymentMethod,
+    TopUp,
+    TopUpStatus,
+    Transaction,
+    UsageSummary,
+)
 from runcrate.models.environments import Environment, EnvironmentCreate, EnvironmentUpdate
 from runcrate.models.instances import (
     Instance,
@@ -47,6 +55,7 @@ from runcrate.models.storage import StorageVolume
 from runcrate.models.templates import Template
 
 __all__ = [
+    "AutoRecharge",
     "Balance",
     "ChatCompletion",
     "ChatMessage",
@@ -70,6 +79,7 @@ __all__ = [
     "JobStatus",
     "JobUpload",
     "ListMeta",
+    "PaymentMethod",
     "Schedule",
     "ScheduleCreate",
     "ScheduleCredential",
@@ -86,6 +96,8 @@ __all__ = [
     "StopReason",
     "Template",
     "Transcription",
+    "TopUp",
+    "TopUpStatus",
     "Transaction",
     "UsageSummary",
     "VideoJob",
